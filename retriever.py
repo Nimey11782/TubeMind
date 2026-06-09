@@ -1,10 +1,7 @@
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
-
-from langchain_classic.retrievers import MultiQueryRetriever
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import LLMChainExtractor
+from sentence_transformers import CrossEncoder
 
 from dotenv import load_dotenv
 
@@ -34,7 +31,38 @@ def get_vectorstore(index_path="faiss_index"):
 
     return _vectorstore
 
-def retrieve_chunks(query: str,k: int=4):
+_reranker = CrossEncoder(
+    "cross-encoder/ms-marco-MiniLM-L-6-v2"
+)
+def rerank_documents(query, docs, top_n=4):
+
+    # Create query-document pairs
+    pairs = [
+        (query, doc.page_content)
+        for doc in docs
+    ]
+
+    # Predict relevance scores
+    scores = _reranker.predict(pairs)
+
+    # Combine docs + scores
+    scored_docs = list(zip(docs, scores))
+
+    # Sort descending by score
+    scored_docs.sort(
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    # Keep only top_n docs
+    reranked_docs = [
+        doc for doc, score in scored_docs[:top_n]
+    ]
+
+    return reranked_docs
+
+DEBUG = False
+def retrieve_chunks(query: str,k: int=10):
     vector_store=get_vectorstore()
     base_retriever = vector_store.as_retriever(
         search_type="mmr",
@@ -43,8 +71,52 @@ def retrieve_chunks(query: str,k: int=4):
             "lambda_mult": 0.6
         }
     )
-    docs = base_retriever.invoke(query)
-    return docs
+    retrieved_docs = base_retriever.invoke(query)
+    reranked_docs = rerank_documents(
+        query,
+        retrieved_docs,
+        top_n=4
+    )
+    if DEBUG:
+        print("\n========= BEFORE RERANKING =========\n")
+
+        for idx, doc in enumerate(retrieved_docs):
+
+            print(f"\nRESULT {idx+1}")
+            print(doc.page_content[:300])
+            print(doc.metadata)
+
+        # Stage 2 → precision reranking
+        reranked_docs = rerank_documents(
+            query,
+            retrieved_docs,
+            top_n=4
+        )
+
+        print("\n========= AFTER RERANKING =========\n")
+
+        for idx, doc in enumerate(reranked_docs):
+
+            print(f"\nRERANKED {idx+1}")
+            print(doc.page_content[:300])
+            print(doc.metadata)
+
+    return reranked_docs
+
+
+if __name__ == "__main__":
+
+    query = "what does he say about nuclear fission"
+
+    docs = retrieve_chunks(query)
+
+    print("\n========= FINAL RETURNED DOCS =========\n")
+
+    for idx, doc in enumerate(docs):
+
+        print(f"\nFINAL {idx+1}")
+        print(doc.page_content[:300])
+        print(doc.metadata)
     '''
     # Gemini LLM (for query rewriting + compression)
     llm = ChatGoogleGenerativeAI(
