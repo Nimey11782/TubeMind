@@ -134,6 +134,36 @@ Compared to the initial version, the system was upgraded with:
 * LangSmith tracing for debugging and monitoring
 * Timestamp-grounded source citations
 
+## Retrieval Evaluation
+
+A qualitative benchmark was conducted to compare different retrieval strategies on representative queries.
+
+### Observations
+
+- CrossEncoder reranking improved retrieval precision for entity-focused questions such as questions about Meta and Mark Zuckerberg.
+- MMR retrieval produced more diverse context and performed better on broad summarization-style queries.
+- Similarity search often retrieved semantically related content but was less effective at prioritizing the most relevant passages.
+- CrossEncoder reranking introduced approximately 0.5 seconds of additional retrieval latency compared to similarity search and MMR retrieval.
+
+### Example Findings
+
+| Query Type | Best Performing Method |
+|------------|-----------------------|
+| Entity-specific questions | MMR + CrossEncoder |
+| Broad summarization | MMR |
+| General factual retrieval | MMR / CrossEncoder |
+
+### Latency Comparison
+
+| Retrieval Method | Average Latency |
+|------------------|-----------------|
+| Similarity Search | ~0.02s |
+| MMR Retrieval | ~0.03s |
+| MMR + CrossEncoder Reranking | ~0.50s |
+
+### Key Insight
+
+The evaluation revealed a tradeoff between retrieval quality and latency. MMR retrieval provided broader contextual coverage for summarization tasks, while CrossEncoder reranking improved precision for highly specific queries at the cost of additional retrieval time.
 ---
 
 ## Future Improvements
