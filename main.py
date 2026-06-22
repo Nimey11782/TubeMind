@@ -8,6 +8,7 @@ from fastapi import Depends
 from database.dependencies import get_current_user
 from database.history import load_chat_history
 from database.chat_store import save_message
+import database.schema
 
 app = FastAPI()
 app.include_router(auth_router)
