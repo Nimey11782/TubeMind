@@ -25,20 +25,19 @@ JWT-based authentication with user-specific chat history persistence using SQLit
 ---
 
 
-## Chat Interface
+## YouTube Video QA
 
+Transcript ingestion, conversational question answering, and timestamp-grounded citations.
 
-Ask questions about a YouTube video and receive context-aware answers grounded in retrieved transcript segments
-
-![Chat](ss_/chat.png)
+![Chat 1](ss_/chat1.png)
 
 ---
 
-## Timestamp Grounded Citations
+## Multi-turn Conversation & Citation Tracking
 
-Every response includes source citations linked to transcript timestamps for transparency and verification.
+User-specific chat history stored in SQLite enables conversation continuity across sessions.
 
-![Citations](ss_/citations.png)
+![Chat 2](ss_/chat2.png)
 
 ---
 
