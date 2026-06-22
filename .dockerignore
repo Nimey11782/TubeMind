@@ -1,7 +1,7 @@
 venv/
-__pycache__/
-*.pyc
-.env
-faiss_index/
 model_cache/
+faiss_index/
+__pycache__/
+.git/
+.env
 chatbot.db

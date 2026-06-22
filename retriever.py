@@ -1,7 +1,7 @@
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from sentence_transformers import CrossEncoder
+from langsmith import traceable
 
 from dotenv import load_dotenv
 
@@ -34,6 +34,7 @@ def get_vectorstore(index_path="faiss_index"):
 _reranker = CrossEncoder(
     "cross-encoder/ms-marco-MiniLM-L-6-v2"
 )
+@traceable
 def rerank_documents(query, docs, top_n=4):
 
     # Create query-document pairs
@@ -61,47 +62,48 @@ def rerank_documents(query, docs, top_n=4):
 
     return reranked_docs
 
-DEBUG = False
-def retrieve_chunks(query: str,k: int=10):
+@traceable
+def retrieve_chunks(query: str,mode: str = "rerank",k: int=10):
     vector_store=get_vectorstore()
-    base_retriever = vector_store.as_retriever(
-        search_type="mmr",
-        search_kwargs={
-            "k": k,
-            "lambda_mult": 0.6
-        }
-    )
-    retrieved_docs = base_retriever.invoke(query)
-    reranked_docs = rerank_documents(
-        query,
-        retrieved_docs,
-        top_n=4
-    )
-    if DEBUG:
-        print("\n========= BEFORE RERANKING =========\n")
 
-        for idx, doc in enumerate(retrieved_docs):
+    # ------------------------------- # 1. Similarity Search 
+    # # ------------------------------- 
+    if mode == "similarity": 
+        docs = vector_store.similarity_search( query, k=4 ) 
+        return docs
+    
 
-            print(f"\nRESULT {idx+1}")
-            print(doc.page_content[:300])
-            print(doc.metadata)
-
-        # Stage 2 → precision reranking
-        reranked_docs = rerank_documents(
-            query,
-            retrieved_docs,
-            top_n=4
+    # ------------------------------- # 2. MMR Retrieval
+    #  # ------------------------------- 
+    if mode == "mmr":
+        retriever = vector_store.as_retriever(
+            search_type="mmr",
+            search_kwargs={
+                "k": k,
+                "lambda_mult": 0.6
+            }
         )
+        docs = retriever.invoke(query) 
+        return docs
+    
 
-        print("\n========= AFTER RERANKING =========\n")
+    # ------------------------------- # 2. MMR + Rereanking Retrieval
+    #  # ------------------------------- 
+    if mode == "rerank":
+        retriever = vector_store.as_retriever(
+            search_type="mmr",
+            search_kwargs={
+                "k": k,
+                "lambda_mult": 0.6
+            }
+        )
+        retrieved_docs = retriever.invoke(query) 
+        reranked_docs = rerank_documents( query, retrieved_docs, top_n=4 ) 
+        return reranked_docs
+    
 
-        for idx, doc in enumerate(reranked_docs):
+    raise ValueError( f"Unknown retrieval mode: {mode}" )
 
-            print(f"\nRERANKED {idx+1}")
-            print(doc.page_content[:300])
-            print(doc.metadata)
-
-    return reranked_docs
 
 
 if __name__ == "__main__":
@@ -117,37 +119,5 @@ if __name__ == "__main__":
         print(f"\nFINAL {idx+1}")
         print(doc.page_content[:300])
         print(doc.metadata)
-    '''
-    # Gemini LLM (for query rewriting + compression)
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-3-flash-preview",
-        temperature=0
-    )
     
-    # Multi-Query Retrieval
-    multi_query_retriever = MultiQueryRetriever.from_llm(
-        retriever=base_retriever,
-        llm=llm
-    )
 
-    # Contextual Compression (sentence extraction)
-    compressor = LLMChainExtractor.from_llm(llm)
-
-    compression_retriever = ContextualCompressionRetriever(
-        base_retriever=multi_query_retriever,
-        base_compressor=compressor
-    )
-    docs = compression_retriever.invoke(query)
-
-    return docs 
-    '''
-
-"""
-  don't get confused by code order 
-  runtime order is : multiquery->mmr->compressor
-  when contextulcompressionretriever is called it will call the base retreiver ->multiquery
-  for each rewritten query by multiqueery retriever it call its base retreiver -> mmr
-  for each rewritten query mmr-> embeds the query ,performs similarity search,applies 
-   mmr diversification , return diverse chunks
-  compression runs last only extracts relevant sentences,removes noise
-"""

@@ -103,13 +103,31 @@ _last_retrieved_docs = []
 def retrieve_and_format(input: dict) -> dict:
     global _last_retrieved_docs
     question = input["question"]
+    retrieval_mode = input["retrieval_mode"]
+    question_for_retrieval = question
 
+    if input["chat_history"]:
+
+        last_user_question = ""
+
+        for msg in reversed(input["chat_history"]):
+
+            if isinstance(msg, HumanMessage):
+                last_user_question = msg.content
+                break
+
+        question_for_retrieval = (
+            last_user_question + " " + question
+        )
+
+    docs = retrieve_chunks(
+        question_for_retrieval,
+        mode=retrieval_mode
+    )
     # single retrieval — no double fetch
-    docs = retrieve_chunks(question)
     _last_retrieved_docs = docs
 
     context = build_context(docs)
-
     return {
         "context": context,
         "question": question,
@@ -126,12 +144,13 @@ main_chain = RunnableLambda(retrieve_and_format) | rag_prompt | llm | StrOutputP
 # 7. PUBLIC FUNCTION
 # ─────────────────────────────────────────
 @traceable
-def ask(question: str, chat_history=None) -> RAGResponse:
+def ask(question: str, chat_history=None,retrieval_mode="rerank") -> RAGResponse:
     if chat_history is None:
         chat_history = []
     answer = main_chain.invoke({
         "question": question,
-        "chat_history": chat_history
+        "chat_history": chat_history,
+        "retrieval_mode": retrieval_mode
     })
 
     citations = build_citations(_last_retrieved_docs)
