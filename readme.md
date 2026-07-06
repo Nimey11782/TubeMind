@@ -1,4 +1,4 @@
-# 🎥 YouTube RAG Assistant
+# TubeMind
 
 A Retrieval-Augmented Generation (RAG) system that enables users to chat with YouTube videos using transcript-based semantic search.
 
