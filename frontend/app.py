@@ -137,18 +137,21 @@ if prompt:
         }
     )
 
-    data = response.json()
+    if response.status_code == 200:
+        data = response.json()
 
-    answer = data["answer"]
-    citations = data["citations"]
+        answer = data["answer"]
+        citations = data["citations"]
 
-    st.session_state.messages.append(
-        {
-            "role": "assistant",
-            "content": answer,
-            "citations": citations
-        }
-    )
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": answer,
+                "citations": citations
+            }
+        )
+    else:
+        st.error(f"Error from backend: {response.text}")
 
     st.rerun()
 

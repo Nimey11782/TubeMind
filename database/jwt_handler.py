@@ -1,17 +1,19 @@
 import jwt
+import os
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
-SECRET_KEY = "super_secret_key"
 
-SECRET_KEY = "your_secret_key"
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY environment variable is not set!")
 
 def create_access_token(user_id, username):
 
     payload = {
         "user_id": user_id,
         "username": username,
-        "exp": datetime.utcnow() + timedelta(days=1)
+        "exp": datetime.now(timezone.utc) + timedelta(days=1)
     }
 
     return jwt.encode(

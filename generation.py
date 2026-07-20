@@ -97,48 +97,33 @@ def build_citations(docs: list) -> list[Citation]:
 # 5. RETRIEVE AND FORMAT
 # ─────────────────────────────────────────
 
-# global to preserve docs after chain runs
-_last_retrieved_docs = []
 @traceable
-def retrieve_and_format(input: dict) -> dict:
-    global _last_retrieved_docs
-    question = input["question"]
-    retrieval_mode = input["retrieval_mode"]
+def get_context_and_docs(input_dict: dict) -> tuple[str, list]:
+    question = input_dict["question"]
+    retrieval_mode = input_dict.get("retrieval_mode", "rerank")
     question_for_retrieval = question
 
-    if input["chat_history"]:
-
+    if input_dict.get("chat_history"):
         last_user_question = ""
-
-        for msg in reversed(input["chat_history"]):
-
+        for msg in reversed(input_dict["chat_history"]):
             if isinstance(msg, HumanMessage):
                 last_user_question = msg.content
                 break
-
-        question_for_retrieval = (
-            last_user_question + " " + question
-        )
+        question_for_retrieval = last_user_question + " " + question
 
     docs = retrieve_chunks(
         question_for_retrieval,
         mode=retrieval_mode
     )
-    # single retrieval — no double fetch
-    _last_retrieved_docs = docs
-
+    
     context = build_context(docs)
-    return {
-        "context": context,
-        "question": question,
-        "chat_history": input["chat_history"]
-    }
+    return context, docs
 
 # ─────────────────────────────────────────
 # 6. CHAIN
 # ─────────────────────────────────────────
 
-main_chain = RunnableLambda(retrieve_and_format) | rag_prompt | llm | StrOutputParser()
+main_chain = rag_prompt | llm | StrOutputParser()
 
 # ─────────────────────────────────────────
 # 7. PUBLIC FUNCTION
@@ -147,13 +132,22 @@ main_chain = RunnableLambda(retrieve_and_format) | rag_prompt | llm | StrOutputP
 def ask(question: str, chat_history=None,retrieval_mode="rerank") -> RAGResponse:
     if chat_history is None:
         chat_history = []
-    answer = main_chain.invoke({
+        
+    input_dict = {
         "question": question,
         "chat_history": chat_history,
         "retrieval_mode": retrieval_mode
+    }
+    
+    context, docs = get_context_and_docs(input_dict)
+    
+    answer = main_chain.invoke({
+        "question": question,
+        "chat_history": chat_history,
+        "context": context
     })
 
-    citations = build_citations(_last_retrieved_docs)
+    citations = build_citations(docs)
 
     return RAGResponse(
         answer=answer,

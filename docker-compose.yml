@@ -2,9 +2,23 @@ services:
   backend:
     build: .
     container_name: yt-rag-api
-
     ports:
       - "8000:8000"
-
     env_file:
       - .env
+    volumes:
+      - ./data:/app/data
+      - ./faiss_index:/app/faiss_index
+      - ./model_cache:/app/model_cache
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: yt-rag-frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend

@@ -8,9 +8,23 @@ from fastapi import Depends
 from database.dependencies import get_current_user
 from database.history import load_chat_history
 from database.chat_store import save_message
-import database.schema
+from database.schema import init_db
+from contextlib import asynccontextmanager
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(auth_router)
 
 class QueryRequest(BaseModel):
@@ -32,25 +46,6 @@ async def history(
     )
 
     return rows
-def load_chat_history(user_id):
-
-    rows = get_chat_history(user_id)
-
-    history = []
-
-    for row in rows:
-
-        if row["role"] == "user":
-            history.append(
-                HumanMessage(content=row["content"])
-            )
-
-        else:
-            history.append(
-                AIMessage(content=row["content"])
-            )
-
-    return history
 
 @app.post("/chat", response_model=RAGResponse)
 async def chat(request: QueryRequest,current_user=Depends(get_current_user)):
