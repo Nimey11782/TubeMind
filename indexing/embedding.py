@@ -8,7 +8,9 @@ load_dotenv()
 def store_embeddings(docs,index_path="faiss_index"): #index_path->where to store FAISS
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
-        cache_folder="./model_cache"
+        cache_folder="./model_cache",
+        encode_kwargs={'batch_size': 8},
+        model_kwargs={'device': 'cpu'}
     )
 
 
