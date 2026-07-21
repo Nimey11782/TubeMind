@@ -20,44 +20,70 @@ def extract_video_id(url: str) -> str: # it is used to extract yt video id from 
 
     raise ValueError("Invalid YouTube URL")  
 
-def ingest_youtube_transcript(url: str) -> list[Document]:# ->list[document] is the return type
-    video_id = extract_video_id(url)
-    api = YouTubeTranscriptApi()
+import requests
 
+def get_free_proxies():
     try:
-        transcript_list = api.fetch(video_id, languages=["en"])
-        #transcript_list is a list in which each chunk has text ,start time ,duration 
-        #we need all text,start and duration so preserving them in document
-        #The system preserves transcript segment + timestamp + duration + video source instead of one giant text
-        documents=[]
-        for idx,chunk in enumerate(transcript_list):
-            text = chunk.text.strip()
+        res = requests.get("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all")
+        if res.status_code == 200:
+            proxies = res.text.strip().split("\r\n")
+            return [p for p in proxies if p][:10]
+    except Exception:
+        pass
+    return []
 
-            if not text:
-                continue
+def ingest_youtube_transcript(url: str) -> list[Document]:
+    video_id = extract_video_id(url)
+    
+    transcript_data = None
+    try:
+        transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
+    except Exception as e:
+        if "TranscriptsDisabled" in str(type(e)):
+            raise RuntimeError("No captions available for this video")
+            
+        print(f"Direct fetch failed: {type(e).__name__}. Trying proxies...")
+        proxies = get_free_proxies()
+        
+        for proxy_ip in proxies:
+            print(f"Trying proxy: {proxy_ip}")
+            try:
+                transcript_data = YouTubeTranscriptApi.get_transcript(
+                    video_id, 
+                    languages=["en"],
+                    proxies={"http": f"http://{proxy_ip}", "https": f"http://{proxy_ip}"}
+                )
+                print("Proxy successful!")
+                break
+            except Exception as proxy_e:
+                print(f"Proxy failed: {type(proxy_e).__name__}")
+                
+        if not transcript_data:
+            raise RuntimeError("Failed to fetch transcript. YouTube may be blocking the server and all proxies failed.")
 
-            if text.startswith("[") and text.endswith("]"):
-                continue
-            doc=Document(
-                page_content=chunk.text,
-                metadata={
-                    "source": "youtube",
-                    "video_id": video_id,
-                    "start": chunk.start,
-                    "duration": chunk.duration,
-                    "segment_id":idx
-                }
-            )
+    documents=[]
+    for idx, chunk in enumerate(transcript_data):
+        text = chunk["text"].strip()
 
-            documents.append(doc)
-        #Document is langchain standard data format which has page content and meta data
-        #RAG pipeline understands this document 
+        if not text:
+            continue
 
-        return documents
-        #langchain expects list of documents so return [doc] and not doc
+        if text.startswith("[") and text.endswith("]"):
+            continue
 
-    except TranscriptsDisabled: #if video captions are off
-        raise RuntimeError("No captions available for this video")
+        doc=Document(
+            page_content=chunk["text"],
+            metadata={
+                "source": "youtube",
+                "video_id": video_id,
+                "start": chunk["start"],
+                "duration": chunk["duration"],
+                "segment_id":idx
+            }
+        )
+        documents.append(doc)
+
+    return documents
     
 
 # if __name__ == "__main__":
