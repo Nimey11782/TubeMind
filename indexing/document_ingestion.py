@@ -35,9 +35,10 @@ def get_free_proxies():
 def ingest_youtube_transcript(url: str) -> list[Document]:
     video_id = extract_video_id(url)
     
-    transcript_data = None
+    transcript_list = None
     try:
-        transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
+        api = YouTubeTranscriptApi()
+        transcript_list = api.fetch(video_id, languages=["en"])
     except Exception as e:
         if "TranscriptsDisabled" in str(type(e)):
             raise RuntimeError("No captions available for this video")
@@ -48,22 +49,23 @@ def ingest_youtube_transcript(url: str) -> list[Document]:
         for proxy_ip in proxies:
             print(f"Trying proxy: {proxy_ip}")
             try:
-                transcript_data = YouTubeTranscriptApi.get_transcript(
-                    video_id, 
-                    languages=["en"],
-                    proxies={"http": f"http://{proxy_ip}", "https": f"http://{proxy_ip}"}
-                )
+                session = requests.Session()
+                session.proxies = {"http": f"http://{proxy_ip}", "https": f"http://{proxy_ip}"}
+                
+                api = YouTubeTranscriptApi(http_client=session)
+                transcript_list = api.fetch(video_id, languages=["en"])
+                
                 print("Proxy successful!")
                 break
             except Exception as proxy_e:
                 print(f"Proxy failed: {type(proxy_e).__name__}")
                 
-        if not transcript_data:
+        if not transcript_list:
             raise RuntimeError("Failed to fetch transcript. YouTube may be blocking the server and all proxies failed.")
 
     documents=[]
-    for idx, chunk in enumerate(transcript_data):
-        text = chunk["text"].strip()
+    for idx, chunk in enumerate(transcript_list):
+        text = chunk.text.strip()
 
         if not text:
             continue
@@ -72,12 +74,12 @@ def ingest_youtube_transcript(url: str) -> list[Document]:
             continue
 
         doc=Document(
-            page_content=chunk["text"],
+            page_content=chunk.text,
             metadata={
                 "source": "youtube",
                 "video_id": video_id,
-                "start": chunk["start"],
-                "duration": chunk["duration"],
+                "start": chunk.start,
+                "duration": chunk.duration,
                 "segment_id":idx
             }
         )
