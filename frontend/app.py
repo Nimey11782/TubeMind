@@ -11,58 +11,66 @@ if "token" not in st.session_state:
 
 if st.session_state.token is None:
 
-    username = st.text_input("Username")
-    password = st.text_input(
-        "Password",
-        type="password"
-    )
+    tab1, tab2 = st.tabs(["Login", "Register"])
 
-    if st.button("Login"):
+    with tab1:
+        st.subheader("Login to your account")
+        username = st.text_input("Username", key="login_user")
+        password = st.text_input("Password", type="password", key="login_pass")
 
-        response = requests.post(
-            f"{API_URL}/login",
-            json={
-                "username": username,
-                "password": password
-            }
-        )
-
-        if response.status_code == 200:
-
-            data = response.json()
-
-            st.session_state.token = data["access_token"]
-            st.session_state.user_id = data["user_id"]
-
-            history_response = requests.get(
-                f"{API_URL}/history",
-                headers={
-                    "Authorization":
-                    f"Bearer {st.session_state.token}"
+        if st.button("Login"):
+            response = requests.post(
+                f"{API_URL}/login",
+                json={
+                    "username": username,
+                    "password": password
                 }
             )
 
-            st.session_state.messages = []
+            if response.status_code == 200:
+                data = response.json()
+                st.session_state.token = data["access_token"]
+                st.session_state.user_id = data["user_id"]
 
-            if history_response.status_code == 200:
+                history_response = requests.get(
+                    f"{API_URL}/history",
+                    headers={
+                        "Authorization": f"Bearer {st.session_state.token}"
+                    }
+                )
 
-                rows = history_response.json()
+                st.session_state.messages = []
+                if history_response.status_code == 200:
+                    rows = history_response.json()
+                    for row in rows:
+                        st.session_state.messages.append(
+                            {
+                                "role": row["role"],
+                                "content": row["content"]
+                            }
+                        )
+                st.success("Logged in")
+                st.rerun()
+            else:
+                st.error("Login failed")
 
-                for row in rows:
+    with tab2:
+        st.subheader("Create a new account")
+        reg_username = st.text_input("New Username", key="reg_user")
+        reg_password = st.text_input("New Password", type="password", key="reg_pass")
 
-                    st.session_state.messages.append(
-                        {
-                            "role": row["role"],
-                            "content": row["content"]
-                        }
-                    )
-
-            st.success("Logged in")
-
-            st.rerun()
-
-        else:
-            st.error("Login failed")
+        if st.button("Register"):
+            response = requests.post(
+                f"{API_URL}/register",
+                json={
+                    "username": reg_username,
+                    "password": reg_password
+                }
+            )
+            if response.status_code == 200:
+                st.success("Account created successfully! Please switch to the Login tab to log in.")
+            else:
+                st.error(f"Registration failed: {response.text}")
 
     st.stop()
 st.divider()
