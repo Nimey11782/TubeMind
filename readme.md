@@ -6,6 +6,7 @@ The system extracts video transcripts, retrieves relevant context using FAISS + 
 
 The application includes JWT-based user authentication, a FastAPI backend, a Streamlit frontend, and SQLite-powered chat history management that allows users to access their previous conversations across sessions.
 
+Live Demo - https://tubemind-frontend.onrender.com
 ---
 
 # 🏗️ System Architecture
