@@ -23,14 +23,31 @@ def extract_video_id(url: str) -> str: # it is used to extract yt video id from 
 import requests
 
 def get_free_proxies():
-    try:
-        res = requests.get("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all")
-        if res.status_code == 200:
-            proxies = res.text.strip().split("\r\n")
-            return [p for p in proxies if p][:10]
-    except Exception:
-        pass
-    return []
+    """Fetch a large pool of free proxies from multiple sources."""
+    proxies = set()
+    
+    sources = [
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=US,GB,DE,FR,NL&ssl=all&anonymity=elite",
+        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+        "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+    ]
+    
+    for url in sources:
+        try:
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                lines = res.text.strip().replace("\r\n", "\n").split("\n")
+                for line in lines:
+                    line = line.strip()
+                    if line and ":" in line and not line.startswith("#"):
+                        proxies.add(line)
+        except Exception:
+            pass
+
+    proxy_list = list(proxies)
+    print(f"Found {len(proxy_list)} proxies to try.")
+    return proxy_list[:50]
 
 def ingest_youtube_transcript(url: str) -> list[Document]:
     video_id = extract_video_id(url)
