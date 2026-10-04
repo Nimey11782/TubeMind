@@ -1,8 +1,12 @@
 import jwt
+
+from datetime import datetime, timedelta
 import os
 
-from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
 from fastapi import HTTPException
+
+load_dotenv()
 
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
 if not SECRET_KEY:
@@ -13,7 +17,7 @@ def create_access_token(user_id, username):
     payload = {
         "user_id": user_id,
         "username": username,
-        "exp": datetime.now(timezone.utc) + timedelta(days=1)
+        "exp": datetime.utcnow() + timedelta(days=1)
     }
 
     return jwt.encode(

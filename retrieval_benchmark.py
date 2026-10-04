@@ -13,7 +13,8 @@ benchmark_questions = [
 modes = [
     "similarity",
     "mmr",
-    "rerank"
+    "rerank",
+    "hybrid",
 ]
 
 for mode in modes:

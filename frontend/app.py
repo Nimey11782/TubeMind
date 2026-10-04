@@ -1,3 +1,5 @@
+import json
+
 import streamlit as st
 import requests
 
@@ -112,10 +114,12 @@ for msg in st.session_state.messages:
 
             with st.expander("Sources"):
 
-                for citation in msg["citations"]:
+                for source_number, citation in enumerate(msg["citations"], start=1):
+                    citation_number = citation.get("source_number", source_number)
 
                     st.markdown(
-                        f"[{citation['timestamp']}]({citation['youtube_link']})"
+                        f"[Source {citation_number}: "
+                        f"{citation['timestamp']}]({citation['youtube_link']})"
                     )
 
 prompt = st.chat_input(
@@ -135,32 +139,70 @@ if prompt:
         st.markdown(prompt)
 
     response = requests.post(
-        f"{API_URL}/chat",
+        f"{API_URL}/chat/stream",
         headers={
             "Authorization":
             f"Bearer {st.session_state.token}"
         },
         json={
             "question": prompt
-        }
+        },
+        stream=True,
+        timeout=(10, 180),
     )
 
-    if response.status_code == 200:
-        data = response.json()
-
-        answer = data["answer"]
-        citations = data["citations"]
-
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": answer,
-                "citations": citations
-            }
-        )
-    else:
+    if response.status_code != 200:
         st.error(f"Error from backend: {response.text}")
+        response.close()
+    else:
+        answer_parts = []
+        citations = []
+        completed = False
+
+        with st.chat_message("assistant"):
+            answer_display = st.empty()
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+
+                line = (
+                    raw_line.decode("utf-8")
+                    if isinstance(raw_line, bytes)
+                    else raw_line
+                )
+                if not line.startswith("data:"):
+                    continue
+
+                event = json.loads(line.removeprefix("data:").strip())
+                if event["type"] == "token":
+                    answer_parts.append(event["content"])
+                    answer_display.markdown("".join(answer_parts))
+                elif event["type"] == "done":
+                    citations = event["citations"]
+                    completed = True
+
+            response.close()
+            answer = "".join(answer_parts)
+            if completed:
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                        "citations": citations,
+                    }
+                )
+
+                if citations:
+                    with st.expander("Sources"):
+                        for source_number, citation in enumerate(citations, start=1):
+                            citation_number = citation.get(
+                                "source_number",
+                                source_number,
+                            )
+                            st.markdown(
+                                f"[Source {citation_number}: "
+                                f"{citation['timestamp']}]"
+                                f"({citation['youtube_link']})"
+                            )
 
     st.rerun()
-
-

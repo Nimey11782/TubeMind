@@ -7,7 +7,8 @@ benchmark_questions = [
 retrieval_modes = [
     "similarity",
     "mmr",
-    "rerank"
+    "rerank",
+    "hybrid",
 ]
 
 for mode in retrieval_modes:
