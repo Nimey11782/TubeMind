@@ -5,3 +5,7 @@ __pycache__/
 faiss_index/
 model_cache/
 chatbot.db
+chatbot.db-shm
+chatbot.db-wal
+node_modules/
+frontend/dist/

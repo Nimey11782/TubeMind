@@ -1,9 +1,6 @@
 fastapi
 uvicorn
 
-streamlit
-requests
-
 langchain
 langchain-community
 langchain-core

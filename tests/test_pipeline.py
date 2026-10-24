@@ -591,107 +591,63 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(citations[0].timestamp, "01:01 - 01:10")
 
 
-class ApiPipelineTests(unittest.TestCase):
-    @patch("main.save_message")
-    @patch("main.ask")
-    @patch("main.load_chat_history", return_value=[])
-    @patch("main.get_user_index_path", return_value=Path("user-index"))
-    def test_chat_uses_authenticated_users_index(
+class RagServiceTests(unittest.TestCase):
+    @patch("rag_service.run_ingestion")
+    @patch("rag_service.get_chat_index_path", return_value=Path("user_7/chat_12"))
+    def test_ingestion_uses_user_and_chat_index(
         self,
-        get_user_index_path,
-        load_chat_history,
-        ask,
-        save_message,
+        get_chat_index_path,
+        run_ingestion,
     ):
-        import main
+        import rag_service
+
+        response = rag_service.ingest(
+            rag_service.IngestRequest(
+                url="https://youtu.be/abcdefghijk",
+                user_id=7,
+                chat_id=12,
+            )
+        )
+
+        self.assertEqual(response["video_id"], "abcdefghijk")
+        get_chat_index_path.assert_called_once_with(7, 12)
+        run_ingestion.assert_called_once_with(
+            "https://youtu.be/abcdefghijk",
+            index_path=Path("user_7/chat_12"),
+        )
+
+    @patch("rag_service.ask")
+    @patch("rag_service.get_chat_index_path", return_value=Path("user_7/chat_12"))
+    def test_chat_passes_only_requested_chat_history_and_index(
+        self,
+        get_chat_index_path,
+        ask,
+    ):
+        import rag_service
         from generation import RAGResponse
 
         ask.return_value = RAGResponse(answer="Answer", citations=[])
-        response = main.chat(
-            main.QueryRequest(question="Question"),
-            current_user={"user_id": 7},
+        response = rag_service.chat(
+            rag_service.ChatRequest(
+                question="Question",
+                user_id=7,
+                chat_id=12,
+                history=[
+                    {"role": "user", "content": "Earlier question"},
+                    {"role": "assistant", "content": "Earlier answer"},
+                ],
+            )
         )
 
         self.assertEqual(response.answer, "Answer")
-        get_user_index_path.assert_called_once_with(7)
-        ask.assert_called_once_with(
-            "Question",
-            [],
-            retrieval_mode="hybrid",
-            index_path=Path("user-index"),
+        get_chat_index_path.assert_called_once_with(7, 12)
+        ask.assert_called_once()
+        self.assertEqual(ask.call_args.args[0], "Question")
+        self.assertEqual(
+            [type(message).__name__ for message in ask.call_args.args[1]],
+            ["HumanMessage", "AIMessage"],
         )
-        self.assertEqual(save_message.call_count, 2)
-
-    @patch("main.run_in_threadpool", new_callable=Mock)
-    @patch("main.save_message")
-    @patch("main.load_chat_history", return_value=[])
-    @patch("main.get_user_index_path")
-    @patch("main.stream_answer")
-    def test_streaming_chat_sends_events_and_saves_completed_turn(
-        self,
-        stream_answer,
-        get_user_index_path,
-        load_chat_history,
-        save_message,
-        run_in_threadpool,
-    ):
-        import main
-
-        async def run_in_thread(function, *args, **kwargs):
-            return function(*args, **kwargs)
-
-        async def fake_stream_answer(*args, **kwargs):
-            yield {"type": "token", "content": "A streamed"}
-            yield {"type": "token", "content": " answer."}
-            yield {"type": "done", "citations": []}
-
-        run_in_threadpool.side_effect = run_in_thread
-        stream_answer.side_effect = fake_stream_answer
-
-        with tempfile.TemporaryDirectory() as directory:
-            index_path = Path(directory)
-            (index_path / "index.faiss").touch()
-            get_user_index_path.return_value = index_path
-
-            response = main.chat_stream(
-                main.QueryRequest(question="Question"),
-                current_user={"user_id": 7},
-            )
-            body = asyncio.run(self._read_stream(response))
-
-        self.assertEqual(response.media_type, "text/event-stream")
-        self.assertIn(b'"content": "A streamed"', body)
-        self.assertIn(b'"type": "done"', body)
-        self.assertEqual(save_message.call_count, 2)
-
-    @staticmethod
-    async def _read_stream(response):
-        chunks = [chunk async for chunk in response.body_iterator]
-        return "".join(
-            chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            for chunk in chunks
-        ).encode("utf-8")
-
-    @patch("main.run_ingestion")
-    @patch("main.get_user_index_path", return_value=Path("user-index"))
-    def test_ingestion_uses_authenticated_users_index(
-        self,
-        get_user_index_path,
-        run_ingestion,
-    ):
-        import main
-
-        response = main.ingest(
-            main.IngestRequest(url="https://youtu.be/abcdefghijk"),
-            current_user={"user_id": 7},
-        )
-
-        self.assertEqual(response, {"status": "ok"})
-        get_user_index_path.assert_called_once_with(7)
-        run_ingestion.assert_called_once_with(
-            "https://youtu.be/abcdefghijk",
-            index_path=Path("user-index"),
-        )
+        self.assertEqual(ask.call_args.kwargs["index_path"], Path("user_7/chat_12"))
 
 
 class IngestionPipelineTests(unittest.TestCase):
@@ -745,6 +701,17 @@ class IngestionPipelineTests(unittest.TestCase):
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_creates_chat_index_path_per_user_and_chat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(embedding, "DEFAULT_INDEX_PATH", Path(directory)):
+                self.assertEqual(
+                    embedding.get_chat_index_path(7, 12),
+                    Path(directory) / "user_7" / "chat_12",
+                )
+
+        with self.assertRaises(ValueError):
+            embedding.get_chat_index_path(0, 12)
+
     def test_creates_missing_database_directory(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "nested" / "chatbot.db"

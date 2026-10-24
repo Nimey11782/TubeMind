@@ -1,17 +1,35 @@
 services:
-  backend:
-    build: .
+  api:
+    build: ./backend
     container_name: yt-rag-api
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
+      PORT: 8000
       DB_PATH: /app/data/chatbot.db
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env}
+      RAG_URL: http://rag:8001
+      FRONTEND_ORIGIN: http://localhost:8501
     volumes:
       - ./data:/app/data
+    depends_on:
+      rag:
+        condition: service_healthy
+
+  rag:
+    build: .
+    container_name: yt-rag-service
+    env_file:
+      - .env
+    volumes:
       - ./faiss_index:/app/faiss_index
       - ./model_cache:/app/model_cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   frontend:
     build:
@@ -20,7 +38,5 @@ services:
     container_name: yt-rag-frontend
     ports:
       - "8501:8501"
-    environment:
-      - BACKEND_URL=http://backend:8000
     depends_on:
-      - backend
+      - api

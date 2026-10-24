@@ -56,6 +56,12 @@ def get_user_index_path(user_id: int) -> Path:
     return DEFAULT_INDEX_PATH / f"user_{user_id}"
 
 
+def get_chat_index_path(user_id: int, chat_id: int) -> Path:
+    if user_id < 1 or chat_id < 1:
+        raise ValueError("user_id and chat_id must be positive integers")
+    return get_user_index_path(user_id) / f"chat_{chat_id}"
+
+
 def _get_index_lock(index_path: Path):
     with _index_locks_lock:
         return _index_locks.setdefault(index_path, Lock())
