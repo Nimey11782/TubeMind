@@ -1,15 +1,13 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 import { createApp } from "../app.js";
-import { openDatabase } from "../db.js";
+import { initializeDatabase, openDatabase } from "../db.js";
 
 const servers = [];
+const integrationTest = process.env.TEST_DATABASE_URL ? test : test.skip;
 
 async function listen(server) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -23,7 +21,7 @@ after(async () => {
   })));
 });
 
-test("users get isolated chats, videos, messages, and chat-specific retrieval", async () => {
+integrationTest("users get isolated chats, videos, messages, and chat-specific retrieval", async () => {
   const ragRequests = [];
   const ragServer = createServer(async (req, res) => {
     const chunks = [];
@@ -45,20 +43,23 @@ test("users get isolated chats, videos, messages, and chat-specific retrieval", 
     }
   });
   const ragUrl = await listen(ragServer);
-  const db = openDatabase(":memory:");
+  const username = `sample-${randomUUID().slice(0, 30)}`;
+  const otherUsername = `other-${randomUUID().slice(0, 30)}`;
+  const db = openDatabase(process.env.TEST_DATABASE_URL);
+  await initializeDatabase(db);
   const apiUrl = await listen(createApp({ db, jwtSecret: "test-secret", ragUrl }).listen(0, "127.0.0.1"));
 
   try {
     let response = await fetch(`${apiUrl}/register`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "sample-user", password: "password123" }),
+      body: JSON.stringify({ username, password: "password123" }),
     });
     assert.equal(response.status, 201);
     response = await fetch(`${apiUrl}/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "sample-user", password: "password123" }),
+      body: JSON.stringify({ username, password: "password123" }),
     });
     const { access_token: token } = await response.json();
     const auth = { authorization: `Bearer ${token}`, "content-type": "application/json" };
@@ -101,52 +102,24 @@ test("users get isolated chats, videos, messages, and chat-specific retrieval", 
     const otherUser = await fetch(`${apiUrl}/register`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "other-user", password: "password123" }),
+      body: JSON.stringify({ username: otherUsername, password: "password123" }),
     });
     assert.equal(otherUser.status, 201);
     const otherLogin = await fetch(`${apiUrl}/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "other-user", password: "password123" }),
+      body: JSON.stringify({ username: otherUsername, password: "password123" }),
     }).then((r) => r.json());
     response = await fetch(`${apiUrl}/chats/${firstChat.id}/messages`, {
       headers: { authorization: `Bearer ${otherLogin.access_token}` },
     });
     assert.equal(response.status, 404);
   } finally {
-    db.close();
+    await db.query("DELETE FROM users WHERE username = ANY($1::text[])", [[username, otherUsername]]);
+    await db.end();
   }
 });
 
-test("opening an existing SQLite database groups legacy messages into a previous chat", () => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "tubemind-db-"));
-  const databasePath = path.join(directory, "legacy.db");
-  const legacy = new Database(databasePath);
-  legacy.exec(`
-    CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT);
-    CREATE TABLE messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    INSERT INTO users (id, username, password_hash) VALUES (1, 'legacy-user', 'hash');
-    INSERT INTO messages (user_id, role, content) VALUES (1, 'user', 'Old question');
-    INSERT INTO messages (user_id, role, content) VALUES (1, 'assistant', 'Old answer');
-  `);
-  legacy.close();
-
-  try {
-    const db = openDatabase(databasePath);
-    const chats = db.prepare("SELECT id, title FROM chats WHERE user_id = 1").all();
-    const messages = db.prepare("SELECT chat_id, content FROM messages ORDER BY id").all();
-    assert.equal(chats.length, 1);
-    assert.equal(chats[0].title, "Previous chat");
-    assert.equal(messages[0].chat_id, chats[0].id);
-    assert.equal(messages[1].chat_id, chats[0].id);
-    db.close();
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
+test("PostgreSQL configuration is required", () => {
+  assert.throws(() => openDatabase(""), /DATABASE_URL is required/);
 });

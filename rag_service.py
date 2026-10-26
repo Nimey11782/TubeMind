@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import json
 from typing import Literal
 
@@ -6,10 +7,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from indexing.document_ingestion import extract_video_id
-from indexing.embedding import get_chat_index_path
 from indexing.index_pipeline import run_ingestion
+from indexing.vector_store import has_chat_vectors, verify_vector_database
 from generation import ask, stream_answer
 
 
@@ -45,7 +47,13 @@ class ChatRequest(BaseModel):
         return question.strip()
 
 
-app = FastAPI(title="TubeMind RAG service")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await run_in_threadpool(verify_vector_database)
+    yield
+
+
+app = FastAPI(title="TubeMind RAG service", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -55,9 +63,8 @@ async def health():
 
 @app.post("/ingest")
 def ingest(request: IngestRequest):
-    index_path = get_chat_index_path(request.user_id, request.chat_id)
     try:
-        run_ingestion(request.url, index_path=index_path)
+        run_ingestion(request.url, request.user_id, request.chat_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -76,23 +83,20 @@ def langchain_history(history: list[ChatMessage]):
 
 @app.post("/chat")
 def chat(request: ChatRequest):
-    index_path = get_chat_index_path(request.user_id, request.chat_id)
-    try:
-        response = ask(
-            request.question,
-            langchain_history(request.history),
-            retrieval_mode=request.retrieval_mode,
-            index_path=index_path,
-        )
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=409, detail="Ingest a video before chatting") from exc
-    return response
+    if not has_chat_vectors(request.user_id, request.chat_id):
+        raise HTTPException(status_code=409, detail="Ingest a video before chatting")
+    return ask(
+        request.question,
+        langchain_history(request.history),
+        retrieval_mode=request.retrieval_mode,
+        user_id=request.user_id,
+        chat_id=request.chat_id,
+    )
 
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
-    index_path = get_chat_index_path(request.user_id, request.chat_id)
-    if not (index_path / "index.faiss").is_file():
+def chat_stream(request: ChatRequest):
+    if not has_chat_vectors(request.user_id, request.chat_id):
         raise HTTPException(status_code=409, detail="Ingest a video before chatting")
 
     async def events() -> AsyncIterator[str]:
@@ -100,7 +104,8 @@ async def chat_stream(request: ChatRequest):
             request.question,
             langchain_history(request.history),
             retrieval_mode=request.retrieval_mode,
-            index_path=index_path,
+            user_id=request.user_id,
+            chat_id=request.chat_id,
         ):
             yield f"data: {json.dumps(event)}\n\n"
 

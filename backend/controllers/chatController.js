@@ -9,24 +9,24 @@ import {
 } from "../services/chatService.js";
 import { openRagChatStream, readRagEvents } from "../services/ragClient.js";
 
-export function listChats(req, res) {
-  return res.json(getUserChats(req.app.locals.db, req.user.user_id));
+export async function listChats(req, res) {
+  return res.json(await getUserChats(req.app.locals.db, req.user.user_id));
 }
 
-export function createChat(req, res) {
-  return res.status(201).json(createUserChat(req.app.locals.db, req.user.user_id));
+export async function createChat(req, res) {
+  return res.status(201).json(await createUserChat(req.app.locals.db, req.user.user_id));
 }
 
-export function getMessages(req, res) {
-  return res.json(getChatMessages(
+export async function getMessages(req, res) {
+  return res.json(await getChatMessages(
     req.app.locals.db,
     req.params.chatId,
     req.user.user_id,
   ));
 }
 
-export function removeChat(req, res) {
-  deleteUserChat(req.app.locals.db, req.params.chatId, req.user.user_id);
+export async function removeChat(req, res) {
+  await deleteUserChat(req.app.locals.db, req.params.chatId, req.user.user_id);
   return res.status(204).end();
 }
 
@@ -42,7 +42,7 @@ export async function ingest(req, res) {
 }
 
 export async function streamChat(req, res) {
-  const request = prepareChatRequest(req.app.locals.db, {
+  const request = await prepareChatRequest(req.app.locals.db, {
     chatId: req.params.chatId,
     userId: req.user.user_id,
     question: req.body?.question,
@@ -78,6 +78,6 @@ export async function streamChat(req, res) {
     }
     return;
   }
-  persistChatAnswer(req.app.locals.db, request, answer, citations);
+  await persistChatAnswer(req.app.locals.db, request, answer, citations);
   if (!res.destroyed) res.end();
 }

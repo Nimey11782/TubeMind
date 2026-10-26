@@ -1,19 +1,17 @@
 import asyncio
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from langchain_core.documents import Document
-from langchain_core.embeddings.fake import FakeEmbeddings
 from youtube_transcript_api import TranscriptsDisabled
 
 import indexing.embedding as embedding
 import indexing.index_pipeline as index_pipeline
+import indexing.vector_store as vector_store
 import indexing.document_ingestion as document_ingestion
 import retriever
-import database.db as database
 from indexing.window_chunking import create_windowed_chunks
 
 
@@ -144,145 +142,81 @@ class EmbeddingTests(unittest.TestCase):
         self.assertIs(first, second)
         embeddings_class.assert_called_once()
 
-    @patch("indexing.embedding.get_embeddings")
-    @patch("indexing.embedding.FAISS")
-    def test_persists_non_empty_index(self, faiss_class, get_embeddings):
-        vectorstore = faiss_class.from_documents.return_value
-        docs = [Document(page_content="transcript chunk")]
-
-        with tempfile.TemporaryDirectory() as directory:
-            result = embedding.store_embeddings(docs, directory)
-
-        self.assertIs(result, vectorstore)
-        kwargs = faiss_class.from_documents.call_args.kwargs
-        self.assertEqual(kwargs["documents"], docs)
-        self.assertIs(kwargs["embedding"], get_embeddings.return_value)
-        self.assertEqual(len(kwargs["ids"]), 1)
-        vectorstore.save_local.assert_called_once_with(
-            str(Path(directory).resolve())
-        )
-
-    @patch("indexing.embedding.get_embeddings")
-    @patch("indexing.embedding.FAISS")
-    def test_updates_same_video_without_removing_other_videos(
-        self, faiss_class, get_embeddings
+    @patch("indexing.vector_store._connect")
+    @patch("indexing.vector_store.get_embeddings")
+    def test_stores_vectors_separately_for_each_chat(
+        self, get_embeddings, connect
     ):
-        existing_store = faiss_class.load_local.return_value
-        existing_store.index_to_docstore_id = {
-            0: "another-video",
-            1: "previous-video",
-        }
-        existing_store.docstore.search.side_effect = [
-            Document(
-                page_content="other",
-                metadata={"video_id": "lmnopqrstuv"},
-            ),
-            Document(
-                page_content="old",
-                metadata={"video_id": "abcdefghijk"},
-            ),
-        ]
-        replacement = Document(
-            page_content="new",
+        connection = Mock()
+        connect.return_value.__enter__.return_value = connection
+        get_embeddings.return_value.embed_documents.return_value = [[0.1] * 384]
+        doc = Document(
+            page_content="transcript chunk",
             metadata={
-                "video_id": "abcdefghijk",
                 "chunk_id": "abcdefghijk:0:1:0",
+                "video_id": "abcdefghijk",
             },
         )
 
-        with tempfile.TemporaryDirectory() as directory:
-            Path(directory, "index.faiss").touch()
-            result = embedding.store_embeddings([replacement], directory)
+        vector_store.store_embeddings([doc], user_id=7, chat_id=12)
 
-        self.assertIs(result, existing_store)
-        existing_store.delete.assert_called_once_with(ids=["previous-video"])
-        existing_store.add_documents.assert_called_once_with(
-            [replacement],
-            ids=["abcdefghijk:0:1:0"],
-        )
-        existing_store.save_local.assert_called_once()
-
-    def test_user_indexes_are_isolated(self):
-        first_user_path = embedding.get_user_index_path(1)
-        second_user_path = embedding.get_user_index_path(2)
-
-        self.assertNotEqual(first_user_path, second_user_path)
         self.assertEqual(
-            first_user_path.parent,
-            embedding.DEFAULT_INDEX_PATH,
+            connection.execute.call_args_list[0].args,
+            ("SELECT pg_advisory_xact_lock(%s, %s)", (7, 12)),
         )
-        with self.assertRaises(ValueError):
-            embedding.get_user_index_path(0)
-
-    def test_real_faiss_reingestion_replaces_only_the_same_video(self):
-        first_video = Document(
-            page_content="Old transcript for the first video.",
-            metadata={
-                "video_id": "abcdefghijk",
-                "chunk_id": "abcdefghijk:0:1:0",
-            },
-        )
-        another_video = Document(
-            page_content="Transcript for an unrelated video.",
-            metadata={
-                "video_id": "lmnopqrstuv",
-                "chunk_id": "lmnopqrstuv:0:1:0",
-            },
-        )
-        replacement_video = Document(
-            page_content="Updated transcript for the first video.",
-            metadata={
-                "video_id": "abcdefghijk",
-                "chunk_id": "abcdefghijk:0:1:0",
-            },
-        )
-        embeddings = FakeEmbeddings(size=8)
-
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            embedding,
-            "get_embeddings",
-            return_value=embeddings,
-        ):
-            embedding.store_embeddings(
-                [first_video, another_video],
-                directory,
-            )
-            vectorstore = embedding.store_embeddings(
-                [replacement_video],
-                directory,
-            )
-
-        stored_documents = [
-            vectorstore.docstore.search(docstore_id)
-            for docstore_id in vectorstore.index_to_docstore_id.values()
-        ]
-        self.assertEqual(vectorstore.index.ntotal, 2)
         self.assertEqual(
-            {doc.metadata["video_id"] for doc in stored_documents},
-            {"abcdefghijk", "lmnopqrstuv"},
+            connection.execute.call_args_list[1].args,
+            ("DELETE FROM transcript_chunks WHERE user_id = %s AND chat_id = %s", (7, 12)),
         )
-        self.assertIn(
-            "Updated transcript",
-            next(
-                doc.page_content
-                for doc in stored_documents
-                if doc.metadata["video_id"] == "abcdefghijk"
-            ),
-        )
+        connection.cursor.return_value.executemany.assert_called_once()
+        statement, rows = connection.cursor.return_value.executemany.call_args.args
+        self.assertIn("INSERT INTO transcript_chunks", statement)
+        self.assertEqual(rows[0][:5], (7, 12, "abcdefghijk:0:1:0", "abcdefghijk", "transcript chunk"))
 
     def test_rejects_empty_index(self):
         with self.assertRaisesRegex(ValueError, "without transcript chunks"):
-            embedding.store_embeddings([])
+            vector_store.store_embeddings([], user_id=7, chat_id=12)
+
+
+class VectorSearchTests(unittest.TestCase):
+    @patch("indexing.vector_store._connect")
+    @patch("indexing.vector_store.get_embeddings")
+    def test_search_uses_cosine_distance_scoped_to_user_and_chat(
+        self, get_embeddings, connect
+    ):
+        metadata = {
+            "chunk_id": "abcdefghijk:0:1:0",
+            "video_id": "abcdefghijk",
+        }
+        cursor = Mock()
+        cursor.fetchall.return_value = [("relevant chunk", metadata)]
+        connection = Mock()
+        connection.execute.side_effect = [None, cursor]
+        connect.return_value.__enter__.return_value = connection
+        get_embeddings.return_value.embed_query.return_value = [0.1] * 384
+
+        results = vector_store.search_similar(
+            "question",
+            user_id=7,
+            chat_id=12,
+            limit=20,
+        )
+
+        self.assertEqual([doc.page_content for doc in results], ["relevant chunk"])
+        search_sql, parameters = connection.execute.call_args_list[1].args
+        self.assertIn("embedding <=> %s", search_sql)
+        self.assertIn("user_id = %s AND chat_id = %s", search_sql)
+        self.assertEqual(parameters[0:2], (7, 12))
+        self.assertEqual(parameters[3], 20)
 
 
 class RetrievalTests(unittest.TestCase):
     @patch("retriever.rerank_documents")
     @patch("retriever.bm25_search")
-    @patch("retriever.get_vectorstore")
+    @patch("retriever.search_similar")
     def test_default_retrieval_fuses_dense_and_bm25_results(
-        self, get_vectorstore, bm25_search, rerank_documents
+        self, search_similar, bm25_search, rerank_documents
     ):
-        vectorstore = get_vectorstore.return_value
         first = Document(
             page_content="dense result",
             metadata={"chunk_id": "first"},
@@ -295,20 +229,21 @@ class RetrievalTests(unittest.TestCase):
             page_content="keyword result",
             metadata={"chunk_id": "sparse"},
         )
-        vectorstore.similarity_search.return_value = [first, shared]
+        search_similar.return_value = [first, shared]
         bm25_search.return_value = [shared, sparse]
 
-        result = retriever.retrieve_chunks("question")
+        result = retriever.retrieve_chunks("question", user_id=7, chat_id=12)
 
-        get_vectorstore.assert_called_once_with(embedding.DEFAULT_INDEX_PATH)
-        vectorstore.similarity_search.assert_called_once_with(
+        search_similar.assert_called_once_with(
             "question",
-            k=20,
+            7,
+            12,
+            limit=20,
         )
         bm25_search.assert_called_once_with(
             "question",
-            vectorstore,
-            index_path=embedding.DEFAULT_INDEX_PATH,
+            7,
+            12,
             top_k=20,
         )
         fused_docs = retriever.reciprocal_rank_fusion(
@@ -324,48 +259,39 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(result, rerank_documents.return_value)
 
     @patch("retriever.rerank_documents")
-    @patch("retriever.get_vectorstore")
-    def test_rerank_mode_is_explicit(self, get_vectorstore, rerank_documents):
-        vectorstore = get_vectorstore.return_value
+    @patch("retriever.search_mmr")
+    def test_rerank_mode_is_explicit(self, search_mmr, rerank_documents):
         documents = [Document(page_content="candidate chunk")]
-        vectorstore.max_marginal_relevance_search.return_value = documents
+        search_mmr.return_value = documents
 
         result = retriever.retrieve_chunks("question", mode="rerank")
 
         rerank_documents.assert_called_once_with("question", documents, top_n=4)
         self.assertEqual(result, rerank_documents.return_value)
-        vectorstore.max_marginal_relevance_search.assert_called_once_with(
+        search_mmr.assert_called_once_with(
             "question",
-            k=10,
-            fetch_k=20,
+            1,
+            1,
+            limit=10,
+            fetch_limit=20,
             lambda_mult=0.6,
         )
 
-    @patch("retriever.get_vectorstore")
-    def test_rejects_invalid_mode_before_loading_index(self, get_vectorstore):
+    @patch("retriever.search_similar")
+    def test_rejects_invalid_mode_before_searching(self, search_similar):
         with self.assertRaisesRegex(ValueError, "Unknown retrieval mode"):
             retriever.retrieve_chunks("question", mode="unknown")
 
-        get_vectorstore.assert_not_called()
+        search_similar.assert_not_called()
 
-    def test_ingestion_refreshes_the_cached_vectorstore(self):
-        old_vectorstore = Mock()
-        new_vectorstore = Mock()
-        with tempfile.TemporaryDirectory() as directory:
-            index_path = Path(directory)
-
-            with patch.object(retriever, "_vectorstores", {}), patch.object(
-                retriever, "_bm25_indexes", {}
-            ):
-                retriever.set_vectorstore(old_vectorstore, index_path)
-                retriever._bm25_indexes[index_path.resolve()] = (
-                    id(old_vectorstore),
-                    Mock(),
-                    [],
-                )
-                retriever.set_vectorstore(new_vectorstore, index_path)
-                self.assertIs(retriever.get_vectorstore(index_path), new_vectorstore)
-                self.assertNotIn(index_path.resolve(), retriever._bm25_indexes)
+    def test_ingestion_clears_only_that_chat_bm25_cache(self):
+        with patch.object(retriever, "_bm25_indexes", {
+            (7, 12): (Mock(), []),
+            (7, 13): (Mock(), []),
+        }):
+            retriever.clear_chat_cache(7, 12)
+            self.assertNotIn((7, 12), retriever._bm25_indexes)
+            self.assertIn((7, 13), retriever._bm25_indexes)
 
     def test_reciprocal_rank_fusion_promotes_shared_results(self):
         first = Document(
@@ -450,7 +376,10 @@ class RetrievalTests(unittest.TestCase):
             ["unrelated", "relevant"],
         )
 
-    def test_bm25_retrieves_exact_keyword_matches_and_caches_index(self):
+    @patch("retriever.load_chat_documents")
+    def test_bm25_retrieves_keyword_matches_and_caches_chat_index(
+        self, load_chat_documents
+    ):
         relevant = Document(
             page_content="The nuclear fusion reaction releases energy.",
             metadata={"chunk_id": "relevant"},
@@ -463,39 +392,14 @@ class RetrievalTests(unittest.TestCase):
             page_content="A documentary explains how stars form.",
             metadata={"chunk_id": "third"},
         )
-        documents_by_id = {
-            "relevant": relevant,
-            "unrelated": unrelated,
-            "third": third,
-        }
-        vectorstore = SimpleNamespace(
-            index_to_docstore_id={
-                0: "relevant",
-                1: "unrelated",
-                2: "third",
-            },
-            docstore=SimpleNamespace(search=documents_by_id.__getitem__),
-        )
+        load_chat_documents.return_value = [relevant, unrelated, third]
+        with patch.object(retriever, "_bm25_indexes", {}):
+            first_result = retriever.bm25_search("nuclear fusion", 7, 12)
+            cached_index = retriever._bm25_indexes[(7, 12)]
+            second_result = retriever.bm25_search("nuclear fusion", 7, 12)
+            self.assertIs(retriever._bm25_indexes[(7, 12)], cached_index)
 
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            retriever, "_bm25_indexes", {}
-        ):
-            first_result = retriever.bm25_search(
-                "nuclear fusion",
-                vectorstore,
-                index_path=directory,
-            )
-            cached_index = retriever._bm25_indexes[Path(directory).resolve()]
-            second_result = retriever.bm25_search(
-                "nuclear fusion",
-                vectorstore,
-                index_path=directory,
-            )
-            self.assertIs(
-                retriever._bm25_indexes[Path(directory).resolve()],
-                cached_index,
-            )
-
+        load_chat_documents.assert_called_once_with(7, 12)
         self.assertEqual(first_result[0], relevant)
         self.assertEqual(second_result, first_result)
 
@@ -593,12 +497,7 @@ class GenerationTests(unittest.TestCase):
 
 class RagServiceTests(unittest.TestCase):
     @patch("rag_service.run_ingestion")
-    @patch("rag_service.get_chat_index_path", return_value=Path("user_7/chat_12"))
-    def test_ingestion_uses_user_and_chat_index(
-        self,
-        get_chat_index_path,
-        run_ingestion,
-    ):
+    def test_ingestion_stores_vectors_for_the_requested_user_and_chat(self, run_ingestion):
         import rag_service
 
         response = rag_service.ingest(
@@ -610,18 +509,18 @@ class RagServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(response["video_id"], "abcdefghijk")
-        get_chat_index_path.assert_called_once_with(7, 12)
         run_ingestion.assert_called_once_with(
             "https://youtu.be/abcdefghijk",
-            index_path=Path("user_7/chat_12"),
+            7,
+            12,
         )
 
+    @patch("rag_service.has_chat_vectors", return_value=True)
     @patch("rag_service.ask")
-    @patch("rag_service.get_chat_index_path", return_value=Path("user_7/chat_12"))
-    def test_chat_passes_only_requested_chat_history_and_index(
+    def test_chat_passes_only_requested_chat_history_and_scope(
         self,
-        get_chat_index_path,
         ask,
+        has_chat_vectors,
     ):
         import rag_service
         from generation import RAGResponse
@@ -640,18 +539,19 @@ class RagServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(response.answer, "Answer")
-        get_chat_index_path.assert_called_once_with(7, 12)
+        has_chat_vectors.assert_called_once_with(7, 12)
         ask.assert_called_once()
         self.assertEqual(ask.call_args.args[0], "Question")
         self.assertEqual(
             [type(message).__name__ for message in ask.call_args.args[1]],
             ["HumanMessage", "AIMessage"],
         )
-        self.assertEqual(ask.call_args.kwargs["index_path"], Path("user_7/chat_12"))
+        self.assertEqual(ask.call_args.kwargs["user_id"], 7)
+        self.assertEqual(ask.call_args.kwargs["chat_id"], 12)
 
 
 class IngestionPipelineTests(unittest.TestCase):
-    @patch("indexing.index_pipeline.set_vectorstore")
+    @patch("indexing.index_pipeline.clear_chat_cache")
     @patch("indexing.index_pipeline.store_embeddings")
     @patch("indexing.index_pipeline.create_windowed_chunks")
     @patch("indexing.index_pipeline.ingest_youtube_transcript")
@@ -660,30 +560,16 @@ class IngestionPipelineTests(unittest.TestCase):
         ingest_transcript,
         chunk_documents,
         store_embeddings,
-        set_vectorstore,
+        clear_chat_cache,
     ):
         transcript = [Document(page_content="transcript segment")]
         chunks = [Document(page_content="transcript chunk")]
-        vectorstore = Mock()
         ingest_transcript.return_value = transcript
         chunk_documents.return_value = chunks
-        store_embeddings.return_value = vectorstore
-
-        with tempfile.TemporaryDirectory() as directory:
-            index_path = Path(directory)
-            result = index_pipeline.run_ingestion(
-                "https://youtu.be/abcdefghijk",
-                index_path=index_path,
-            )
-
-        self.assertIs(result, vectorstore)
+        index_pipeline.run_ingestion("https://youtu.be/abcdefghijk", 7, 12)
         chunk_documents.assert_called_once_with(transcript)
-        store_embeddings.assert_called_once_with(
-            chunks, index_path
-        )
-        set_vectorstore.assert_called_once_with(
-            vectorstore, index_path
-        )
+        store_embeddings.assert_called_once_with(chunks, 7, 12)
+        clear_chat_cache.assert_called_once_with(7, 12)
 
     @patch("indexing.index_pipeline.store_embeddings")
     @patch("indexing.index_pipeline.create_windowed_chunks")
@@ -695,34 +581,9 @@ class IngestionPipelineTests(unittest.TestCase):
         chunk_documents.return_value = []
 
         with self.assertRaisesRegex(ValueError, "usable captions"):
-            index_pipeline.run_ingestion("https://youtu.be/abcdefghijk")
+            index_pipeline.run_ingestion("https://youtu.be/abcdefghijk", 7, 12)
 
         store_embeddings.assert_not_called()
-
-
-class DatabaseTests(unittest.TestCase):
-    def test_creates_chat_index_path_per_user_and_chat(self):
-        with tempfile.TemporaryDirectory() as directory:
-            with patch.object(embedding, "DEFAULT_INDEX_PATH", Path(directory)):
-                self.assertEqual(
-                    embedding.get_chat_index_path(7, 12),
-                    Path(directory) / "user_7" / "chat_12",
-                )
-
-        with self.assertRaises(ValueError):
-            embedding.get_chat_index_path(0, 12)
-
-    def test_creates_missing_database_directory(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            database_path = Path(temporary_directory) / "nested" / "chatbot.db"
-            with patch.object(database, "DB_NAME", str(database_path)):
-                connection = database.get_connection()
-                try:
-                    connection.execute("SELECT 1")
-                finally:
-                    connection.close()
-
-            self.assertTrue(database_path.is_file())
 
 
 if __name__ == "__main__":

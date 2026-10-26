@@ -1,12 +1,16 @@
 import { loginUser, registerUser } from "../services/authService.js";
 
-export function register(req, res) {
-  const result = registerUser(req.app.locals.db, req.body?.username, req.body?.password);
+export async function register(req, res) {
+  const result = await registerUser(
+    req.app.locals.db,
+    req.body?.username,
+    req.body?.password,
+  );
   return res.status(201).json(result);
 }
 
-export function login(req, res) {
-  const result = loginUser(
+export async function login(req, res) {
+  const result = await loginUser(
     req.app.locals.db,
     req.app.locals.jwtSecret,
     req.body?.username,

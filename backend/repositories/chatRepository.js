@@ -1,82 +1,98 @@
-export function listChats(db, userId) {
-  return db.prepare(`
+export async function listChats(db, userId) {
+  const result = await db.query(`
     SELECT chats.*,
       (SELECT content FROM messages WHERE chat_id = chats.id ORDER BY id DESC LIMIT 1) AS last_message
     FROM chats
-    WHERE user_id = ?
+    WHERE user_id = $1
     ORDER BY updated_at DESC, id DESC
-  `).all(userId);
+  `, [userId]);
+  return result.rows;
 }
 
-export function createChat(db, userId) {
-  const result = db.prepare("INSERT INTO chats (user_id) VALUES (?)").run(userId);
-  return db.prepare("SELECT * FROM chats WHERE id = ?").get(result.lastInsertRowid);
+export async function createChat(db, userId) {
+  const result = await db.query(
+    "INSERT INTO chats (user_id) VALUES ($1) RETURNING *",
+    [userId],
+  );
+  return result.rows[0];
 }
 
-export function findOwnedChat(db, chatId, userId) {
+export async function findOwnedChat(db, chatId, userId) {
   if (!/^[1-9]\d*$/.test(String(chatId))) return null;
-  return db.prepare("SELECT * FROM chats WHERE id = ? AND user_id = ?")
-    .get(Number(chatId), userId) ?? null;
+  const result = await db.query(
+    "SELECT * FROM chats WHERE id = $1 AND user_id = $2",
+    [Number(chatId), userId],
+  );
+  return result.rows[0] ?? null;
 }
 
-export function listMessages(db, chatId) {
-  return db.prepare(`
+export async function listMessages(db, chatId) {
+  const result = await db.query(`
     SELECT id, role, content, citations, created_at
     FROM messages
-    WHERE chat_id = ?
+    WHERE chat_id = $1
     ORDER BY id
-  `).all(chatId).map(decodeMessage);
-}
-
-function decodeMessage(message) {
-  return {
+  `, [chatId]);
+  return result.rows.map((message) => ({
     ...message,
-    citations: message.citations ? JSON.parse(message.citations) : [],
-  };
+    citations: message.citations ?? [],
+  }));
 }
 
-export function getRecentMessages(db, chatId, limit = 8) {
-  return db.prepare(`
-    SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?
-  `).all(chatId, limit).reverse();
+export async function getRecentMessages(db, chatId, limit = 8) {
+  const result = await db.query(`
+    SELECT role, content FROM messages WHERE chat_id = $1 ORDER BY id DESC LIMIT $2
+  `, [chatId, limit]);
+  return result.rows.reverse();
 }
 
-export function setChatVideo(db, chatId, videoId) {
-  db.prepare(`
-    UPDATE chats SET video_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-  `).run(videoId, chatId);
+export async function setChatVideo(db, chatId, videoId) {
+  await db.query(`
+    UPDATE chats SET video_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2
+  `, [videoId, chatId]);
 }
 
-export function saveConversation(db, { userId, chatId, question, answer, citations }) {
-  db.transaction(saveConversationStatements.bind(null, db, {
-    userId,
-    chatId,
-    question,
-    answer,
-    citations,
-  }))();
+export async function saveConversation(db, { userId, chatId, question, answer, citations }) {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "INSERT INTO messages (user_id, chat_id, role, content) VALUES ($1, $2, 'user', $3)",
+      [userId, chatId, question],
+    );
+    await client.query(`
+      INSERT INTO messages (user_id, chat_id, role, content, citations)
+      VALUES ($1, $2, 'assistant', $3, $4)
+    `, [userId, chatId, answer, JSON.stringify(citations)]);
+    await client.query(`
+      UPDATE chats
+      SET title = CASE WHEN title = 'New chat' THEN $1 ELSE title END,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $2
+    `, [question.slice(0, 60), chatId]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
-export function deleteChat(db, chatId) {
-  db.transaction(deleteChatStatements.bind(null, db, chatId))();
-}
-
-function saveConversationStatements(db, { userId, chatId, question, answer, citations }) {
-  db.prepare("INSERT INTO messages (user_id, chat_id, role, content) VALUES (?, ?, 'user', ?)")
-    .run(userId, chatId, question);
-  db.prepare(`
-    INSERT INTO messages (user_id, chat_id, role, content, citations)
-    VALUES (?, ?, 'assistant', ?, ?)
-  `).run(userId, chatId, answer, JSON.stringify(citations));
-  db.prepare(`
-    UPDATE chats
-    SET title = CASE WHEN title = 'New chat' THEN ? ELSE title END,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).run(question.slice(0, 60), chatId);
-}
-
-function deleteChatStatements(db, chatId) {
-  db.prepare("DELETE FROM messages WHERE chat_id = ?").run(chatId);
-  db.prepare("DELETE FROM chats WHERE id = ?").run(chatId);
+export async function deleteChat(db, chatId) {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "DELETE FROM transcript_chunks WHERE chat_id = $1",
+      [chatId],
+    );
+    await client.query("DELETE FROM chats WHERE id = $1", [chatId]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

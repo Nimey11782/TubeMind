@@ -1,24 +1,23 @@
 import os
 import re
 from hashlib import sha256
-from pathlib import Path
 from threading import Lock
 
-from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langsmith import traceable
 from rank_bm25 import BM25Okapi
 
 from indexing.embedding import (
-    DEFAULT_INDEX_PATH,
     MODEL_CACHE_PATH,
-    get_embeddings,
+)
+from indexing.vector_store import (
+    load_chat_documents,
+    search_mmr,
+    search_similar,
 )
 from tracing_config import TRACING_ENABLED
 
-_vectorstores: dict[Path, FAISS] = {}
-_vectorstore_lock = Lock()
-_bm25_indexes: dict[Path, tuple[int, BM25Okapi, list[Document]]] = {}
+_bm25_indexes: dict[tuple[int, int], tuple[BM25Okapi, list[Document]]] = {}
 _bm25_lock = Lock()
 _reranker = None
 _reranker_lock = Lock()
@@ -27,41 +26,9 @@ _RRF_CONSTANT = 60
 _HYBRID_CANDIDATE_COUNT = 20
 
 
-def _resolve_index_path(index_path: str | Path) -> Path:
-    return Path(index_path).resolve()
-
-
-def get_vectorstore(index_path: str | Path = DEFAULT_INDEX_PATH) -> FAISS:
-    resolved_path = _resolve_index_path(index_path)
-    vectorstore = _vectorstores.get(resolved_path)
-    if vectorstore is None:
-        with _vectorstore_lock:
-            vectorstore = _vectorstores.get(resolved_path)
-            if vectorstore is None:
-                if not (resolved_path / "index.faiss").is_file():
-                    raise FileNotFoundError(
-                        f"FAISS index not found at {resolved_path}. Ingest a video first."
-                    )
-
-                vectorstore = FAISS.load_local(
-                    str(resolved_path),
-                    get_embeddings(),
-                    allow_dangerous_deserialization=True,
-                )
-                _vectorstores[resolved_path] = vectorstore
-
-    return vectorstore
-
-
-def set_vectorstore(
-    vectorstore: FAISS,
-    index_path: str | Path = DEFAULT_INDEX_PATH,
-) -> None:
-    resolved_path = _resolve_index_path(index_path)
-    with _vectorstore_lock:
-        _vectorstores[resolved_path] = vectorstore
+def clear_chat_cache(user_id: int, chat_id: int) -> None:
     with _bm25_lock:
-        _bm25_indexes.pop(resolved_path, None)
+        _bm25_indexes.pop((user_id, chat_id), None)
 
 
 def _get_reranker():
@@ -156,27 +123,24 @@ def reciprocal_rank_fusion(
 
 def bm25_search(
     query: str,
-    vectorstore,
-    index_path: str | Path = DEFAULT_INDEX_PATH,
+    user_id: int,
+    chat_id: int,
     top_k: int = 20,
 ) -> list[Document]:
     if not query.strip() or top_k < 1:
         return []
 
-    resolved_path = _resolve_index_path(index_path)
-    cached_index = _bm25_indexes.get(resolved_path)
-    if cached_index is None or cached_index[0] != id(vectorstore):
+    cache_key = (user_id, chat_id)
+    cached_index = _bm25_indexes.get(cache_key)
+    if cached_index is None:
         with _bm25_lock:
-            cached_index = _bm25_indexes.get(resolved_path)
-            if cached_index is None or cached_index[0] != id(vectorstore):
-                documents = []
-                for docstore_id in vectorstore.index_to_docstore_id.values():
-                    doc = vectorstore.docstore.search(docstore_id)
-                    if isinstance(doc, Document) and doc.page_content.strip():
-                        documents.append(doc)
-
+            cached_index = _bm25_indexes.get(cache_key)
+            if cached_index is None:
+                documents = [
+                    doc for doc in load_chat_documents(user_id, chat_id)
+                    if doc.page_content.strip()
+                ]
                 if not documents:
-                    _bm25_indexes.pop(resolved_path, None)
                     return []
 
                 tokenized_corpus = [
@@ -186,18 +150,14 @@ def bm25_search(
                 if not any(tokenized_corpus):
                     return []
 
-                cached_index = (
-                    id(vectorstore),
-                    BM25Okapi(tokenized_corpus),
-                    documents,
-                )
-                _bm25_indexes[resolved_path] = cached_index
+                cached_index = (BM25Okapi(tokenized_corpus), documents)
+                _bm25_indexes[cache_key] = cached_index
 
     tokens = _BM25_TOKEN_PATTERN.findall(query.casefold())
     if not tokens:
         return []
 
-    scores = cached_index[1].get_scores(tokens)
+    scores = cached_index[0].get_scores(tokens)
     ranked = sorted(
         (
             (index, float(score))
@@ -207,7 +167,7 @@ def bm25_search(
         key=lambda item: item[1],
         reverse=True,
     )
-    return [cached_index[2][index] for index, _ in ranked[:top_k]]
+    return [cached_index[1][index] for index, _ in ranked[:top_k]]
 
 
 @traceable(enabled=TRACING_ENABLED)
@@ -215,7 +175,8 @@ def retrieve_chunks(
     query: str,
     mode: str = "hybrid",
     k: int = 10,
-    index_path: str | Path = DEFAULT_INDEX_PATH,
+    user_id: int = 1,
+    chat_id: int = 1,
 ) -> list[Document]:
     if mode not in {"similarity", "mmr", "rerank", "hybrid"}:
         raise ValueError(f"Unknown retrieval mode: {mode}")
@@ -224,34 +185,41 @@ def retrieve_chunks(
     if not query.strip():
         raise ValueError("query must not be empty")
 
-    vectorstore = get_vectorstore(index_path)
-
     if mode == "similarity":
-        return vectorstore.similarity_search(query, k=min(k, 4))
+        return search_similar(query, user_id, chat_id, limit=min(k, 4))
 
     if mode == "mmr":
-        return vectorstore.max_marginal_relevance_search(
+        return search_mmr(
             query,
-            k=k,
-            fetch_k=max(k * 2, 20),
+            user_id,
+            chat_id,
+            limit=k,
+            fetch_limit=max(k * 2, 20),
             lambda_mult=0.6,
         )
 
     if mode == "rerank":
-        candidates = vectorstore.max_marginal_relevance_search(
+        candidates = search_mmr(
             query,
-            k=k,
-            fetch_k=max(k * 2, 20),
+            user_id,
+            chat_id,
+            limit=k,
+            fetch_limit=max(k * 2, 20),
             lambda_mult=0.6,
         )
         return rerank_documents(query, candidates, top_n=min(k, 4))
 
     candidate_count = max(k, _HYBRID_CANDIDATE_COUNT)
-    dense_results = vectorstore.similarity_search(query, k=candidate_count)
+    dense_results = search_similar(
+        query,
+        user_id,
+        chat_id,
+        limit=candidate_count,
+    )
     sparse_results = bm25_search(
         query,
-        vectorstore,
-        index_path=index_path,
+        user_id,
+        chat_id,
         top_k=candidate_count,
     )
     fused_results = reciprocal_rank_fusion(

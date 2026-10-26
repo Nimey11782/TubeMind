@@ -35,32 +35,32 @@ export function getVideoId(url) {
   return videoId && VIDEO_ID_PATTERN.test(videoId) ? videoId : null;
 }
 
-function requireOwnedChat(db, chatId, userId) {
-  const chat = findOwnedChat(db, chatId, userId);
+async function requireOwnedChat(db, chatId, userId) {
+  const chat = await findOwnedChat(db, chatId, userId);
   if (!chat) throw new HttpError(404, "Chat not found");
   return chat;
 }
 
-export function getUserChats(db, userId) {
+export async function getUserChats(db, userId) {
   return listChats(db, userId);
 }
 
-export function createUserChat(db, userId) {
+export async function createUserChat(db, userId) {
   return createChat(db, userId);
 }
 
-export function getChatMessages(db, chatId, userId) {
-  const chat = requireOwnedChat(db, chatId, userId);
-  return { chat, messages: listMessages(db, chat.id) };
+export async function getChatMessages(db, chatId, userId) {
+  const chat = await requireOwnedChat(db, chatId, userId);
+  return { chat, messages: await listMessages(db, chat.id) };
 }
 
-export function deleteUserChat(db, chatId, userId) {
-  const chat = requireOwnedChat(db, chatId, userId);
-  deleteChat(db, chat.id);
+export async function deleteUserChat(db, chatId, userId) {
+  const chat = await requireOwnedChat(db, chatId, userId);
+  await deleteChat(db, chat.id);
 }
 
 export async function ingestChatVideo(db, ragUrl, chatId, userId, url) {
-  const chat = requireOwnedChat(db, chatId, userId);
+  const chat = await requireOwnedChat(db, chatId, userId);
   if (typeof url !== "string" || url.length > 2048) {
     throw new HttpError(400, "A valid YouTube URL is required");
   }
@@ -73,12 +73,12 @@ export async function ingestChatVideo(db, ragUrl, chatId, userId, url) {
     );
   }
   await ingestVideo(ragUrl, { url, userId, chatId: chat.id });
-  setChatVideo(db, chat.id, videoId);
+  await setChatVideo(db, chat.id, videoId);
   return { status: "ok", video_id: videoId };
 }
 
-export function prepareChatRequest(db, { chatId, userId, question, retrievalMode }) {
-  const chat = requireOwnedChat(db, chatId, userId);
+export async function prepareChatRequest(db, { chatId, userId, question, retrievalMode }) {
+  const chat = await requireOwnedChat(db, chatId, userId);
   if (!chat.video_id) {
     throw new HttpError(409, "Add a video to this chat before asking a question");
   }
@@ -94,12 +94,12 @@ export function prepareChatRequest(db, { chatId, userId, question, retrievalMode
     userId,
     question: question.trim(),
     retrievalMode: mode,
-    history: getRecentMessages(db, chat.id),
+    history: await getRecentMessages(db, chat.id),
   };
 }
 
-export function persistChatAnswer(db, request, answer, citations) {
-  saveConversation(db, {
+export async function persistChatAnswer(db, request, answer, citations) {
+  await saveConversation(db, {
     userId: request.userId,
     chatId: request.chat.id,
     question: request.question,

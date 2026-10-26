@@ -8,7 +8,6 @@ from langchain_groq import ChatGroq
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from indexing.embedding import DEFAULT_INDEX_PATH
 from retriever import retrieve_chunks
 from prompt import rag_prompt
 
@@ -117,7 +116,8 @@ def get_context_and_docs(input_dict: dict) -> tuple[str, list[Document]]:
         question_for_retrieval,
         mode=retrieval_mode,
         k=retrieval_k,
-        index_path=input_dict.get("index_path", DEFAULT_INDEX_PATH),
+        user_id=input_dict.get("user_id", 1),
+        chat_id=input_dict.get("chat_id", 1),
     )
     
     context = build_context(docs)
@@ -137,7 +137,8 @@ def ask(
     question: str,
     chat_history=None,
     retrieval_mode="hybrid",
-    index_path=DEFAULT_INDEX_PATH,
+    user_id=1,
+    chat_id=1,
 ) -> RAGResponse:
     if chat_history is None:
         chat_history = []
@@ -146,7 +147,8 @@ def ask(
         "question": question,
         "chat_history": chat_history,
         "retrieval_mode": retrieval_mode,
-        "index_path": index_path,
+        "user_id": user_id,
+        "chat_id": chat_id,
     }
     
     context, docs = get_context_and_docs(input_dict)
@@ -173,7 +175,8 @@ async def stream_answer(
     question: str,
     chat_history=None,
     retrieval_mode="hybrid",
-    index_path=DEFAULT_INDEX_PATH,
+    user_id=1,
+    chat_id=1,
 ) -> AsyncIterator[dict]:
     if chat_history is None:
         chat_history = []
@@ -184,7 +187,8 @@ async def stream_answer(
             "question": question,
             "chat_history": chat_history,
             "retrieval_mode": retrieval_mode,
-            "index_path": index_path,
+            "user_id": user_id,
+            "chat_id": chat_id,
         },
     )
     if not docs:

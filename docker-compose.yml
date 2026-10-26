@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: tubemind
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: tubemind
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tubemind -d tubemind"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build: ./backend
     container_name: yt-rag-api
@@ -6,24 +22,33 @@ services:
       - "8000:8000"
     environment:
       PORT: 8000
-      DB_PATH: /app/data/chatbot.db
+      DATABASE_URL: postgresql://tubemind:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/tubemind
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env}
       RAG_URL: http://rag:8001
       FRONTEND_ORIGIN: http://localhost:8501
-    volumes:
-      - ./data:/app/data
     depends_on:
-      rag:
+      postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
   rag:
     build: .
     container_name: yt-rag-service
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://tubemind:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/tubemind
+      MODEL_CACHE_PATH: /app/model_cache
     volumes:
-      - ./faiss_index:/app/faiss_index
       - ./model_cache:/app/model_cache
+    depends_on:
+      api:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 15s
@@ -40,3 +65,6 @@ services:
       - "8501:8501"
     depends_on:
       - api
+
+volumes:
+  postgres_data:

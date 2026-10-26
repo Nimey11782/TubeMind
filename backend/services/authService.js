@@ -2,7 +2,7 @@ import jwt from "jsonwebtoken";
 import { HttpError } from "../errors/HttpError.js";
 import { createUser, findUserByUsername, verifyPassword } from "../repositories/userRepository.js";
 
-export function registerUser(db, username, password) {
+export async function registerUser(db, username, password) {
   if (typeof username !== "string" || username.trim().length < 3 ||
       username.trim().length > 40 || typeof password !== "string" ||
       password.length < 8 || password.length > 200) {
@@ -11,17 +11,22 @@ export function registerUser(db, username, password) {
       "Username must be 3-40 characters and password at least 8 characters",
     );
   }
-  if (!createUser(db, username.trim(), password)) {
-    throw new HttpError(409, "Username already exists");
+  try {
+    await createUser(db, username.trim(), password);
+  } catch (error) {
+    if (error.code === "23505") {
+      throw new HttpError(409, "Username already exists");
+    }
+    throw error;
   }
   return { message: "User registered successfully" };
 }
 
-export function loginUser(db, jwtSecret, username, password) {
+export async function loginUser(db, jwtSecret, username, password) {
   if (typeof username !== "string" || typeof password !== "string") {
     throw new HttpError(400, "Username and password are required");
   }
-  const user = findUserByUsername(db, username.trim());
+  const user = await findUserByUsername(db, username.trim());
   if (!user || !verifyPassword(password, user.password_hash)) {
     throw new HttpError(401, "Invalid credentials");
   }

@@ -7,10 +7,11 @@ langchain-core
 langchain-groq
 
 sentence-transformers
-faiss-cpu
 rank-bm25
 flashrank
 onnxruntime
+psycopg[binary]>=3.2
+pgvector>=0.3.6
 
 youtube-transcript-api
 
